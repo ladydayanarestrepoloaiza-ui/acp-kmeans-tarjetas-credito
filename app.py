@@ -21,7 +21,7 @@ import streamlit as st
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_samples, silhouette_score
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, normalize
 
 # --------------------------------------------------------------------------
 # Configuración general
@@ -132,6 +132,8 @@ def preparar(variables, faltantes, usar_log):
     notas["filas_con_faltantes"] = int(datos.isna().any(axis=1).sum())
     if faltantes == "Imputar con la mediana":
         datos = datos.fillna(datos.median())
+    elif faltantes == "Reemplazar por cero":
+        datos = datos.fillna(0)
     else:
         datos = datos.dropna()
     notas["filas_finales"] = len(datos)
@@ -203,13 +205,36 @@ def ajustar_kmeans(espacio, k):
 
 
 # --------------------------------------------------------------------------
+# 4. Método trabajado en clase (para comparar)
+# --------------------------------------------------------------------------
+@st.cache_data
+def metodo_clase():
+    """Reproduce las decisiones del cuaderno de la Clase 13 sobre la misma base:
+    faltantes en cero, estandarización + normalización por fila,
+    2 componentes y K = 3."""
+    datos = cargar_datos().drop(columns="CUST_ID").fillna(0)
+    x = normalize(StandardScaler().fit_transform(datos))
+    acp = PCA(random_state=SEMILLA).fit(x)
+    var_2 = acp.explained_variance_ratio_[:2].sum() * 100
+    plano = pd.DataFrame(acp.transform(x)[:, :2], columns=["CP1", "CP2"], index=datos.index)
+    km = KMeans(n_clusters=3, n_init=10, random_state=SEMILLA).fit(plano)
+    sil = silhouette_score(plano, km.labels_, sample_size=min(3000, len(plano)),
+                           random_state=SEMILLA)
+    orden = pd.Series(km.labels_).value_counts().index
+    nombre = {viejo: f"Clase {i + 1}" for i, viejo in enumerate(orden)}
+    grupos = pd.Series([nombre[v] for v in km.labels_], index=datos.index, name="Método de clase")
+    return datos, plano, grupos, var_2, sil
+
+
+# --------------------------------------------------------------------------
 # Barra lateral: navegación y decisiones de análisis
 # --------------------------------------------------------------------------
 st.sidebar.title("💳 Perfiles de clientes")
 st.sidebar.caption("Taller individual · ACP y K-Means")
 seccion = st.sidebar.radio("Sección", [
     "1. Contexto", "2. Exploración", "3. Preparación",
-    "4. ACP", "5. Segmentación K-Means", "6. Conclusiones",
+    "4. ACP", "5. Segmentación K-Means", "6. Comparación con la clase",
+    "7. Conclusiones",
 ])
 
 st.sidebar.divider()
@@ -225,7 +250,8 @@ if len(elegidas) < 4:
 variables = tuple(c for c in TODAS if c in elegidas)
 
 faltantes = st.sidebar.radio("Valores faltantes",
-                             ["Imputar con la mediana", "Eliminar filas"])
+                             ["Imputar con la mediana", "Reemplazar por cero",
+                              "Eliminar filas"])
 usar_log = st.sidebar.checkbox("Aplicar logaritmo a montos y conteos", value=True)
 
 criterio = st.sidebar.selectbox("Cómo elegir los componentes",
@@ -253,6 +279,7 @@ grupos, sil_ind = ajustar_kmeans(espacio, k)
 sil_k = float(comparacion.loc[comparacion["K"] == k, "Silueta"].iloc[0])
 k_mejor = int(comparacion.loc[comparacion["Silueta"].idxmax(), "K"])
 orden_grupos = [f"Grupo {l}" for l in LETRAS[:k]]
+centros = espacio.groupby(grupos).mean().loc[orden_grupos]  # centroides de K-Means
 
 
 def perfil_estandarizado():
@@ -260,6 +287,21 @@ def perfil_estandarizado():
     p = z.groupby(grupos).mean().loc[orden_grupos]
     p.columns = [NOMBRE[c] for c in p.columns]
     return p
+
+
+def eje(cp):
+    pct = varianza.loc[varianza["Componente"] == cp, "Varianza explicada (%)"].iloc[0]
+    return f"{cp} ({pct:.1f} %)"
+
+
+def elegir_ejes(clave):
+    """Selector de los dos componentes que se grafican (entre los conservados)."""
+    opciones = list(espacio.columns)
+    a, b = st.columns(2)
+    ex = a.selectbox("Eje horizontal", opciones, index=0, key=f"x_{clave}")
+    ey = b.selectbox("Eje vertical", opciones, index=1, key=f"y_{clave}")
+    pct = varianza.set_index("Componente").loc[list({ex, ey}), "Varianza explicada (%)"].sum()
+    return ex, ey, pct
 
 
 def rasgos(fila, n=3):
@@ -397,8 +439,9 @@ elif seccion == "3. Preparación":
    y se ajustaron a 1.
 4. **Faltantes.** Había **{notas['celdas_faltantes']}** celdas vacías en
    **{notas['filas_con_faltantes']}** filas. Opción aplicada: **{faltantes.lower()}**.
-   La mediana se prefiere a la media porque los montos son muy asimétricos, y a
-   eliminar filas porque así no se pierde ningún cliente.
+   La mediana se prefiere a la media porque los montos son muy asimétricos, a
+   eliminar filas porque así no se pierde ningún cliente, y al cero (la opción
+   usada en clase) porque el cero crea un valor que no existe en el resto de la base.
 5. **Logaritmo.** {"Se aplicó" if usar_log else "No se aplicó"} `log(1 + x)` a los
    montos y conteos. Sin esta transformación, unos pocos clientes con valores
    extremos dominan las distancias y K-Means termina formando grupos diminutos de
@@ -485,15 +528,14 @@ elif seccion == "4. ACP":
                    " No tiene cargas negativas importantes."))
 
     st.subheader("Los clientes en el espacio de componentes")
+    ex, ey, pct_plano = elegir_ejes("acp")
     fig = go.Figure(go.Scattergl(
-        x=puntajes["CP1"], y=puntajes["CP2"], mode="markers",
+        x=puntajes[ex], y=puntajes[ey], mode="markers",
         marker=dict(size=5, color=AZUL, opacity=0.35),
-        hovertemplate="CP1: %{x:.2f}<br>CP2: %{y:.2f}<extra></extra>"))
-    mostrar(estilo(fig, "Cada punto es un cliente",
-                   f"CP1 ({varianza['Varianza explicada (%)'][0]:.1f} %)",
-                   f"CP2 ({varianza['Varianza explicada (%)'][1]:.1f} %)", 520))
-    st.warning(f"Este gráfico muestra solo {var_2d:.1f} % de la información. El "
-               f"{100 - var_2d:.1f} % restante está en los demás componentes, de modo "
+        hovertemplate=ex + ": %{x:.2f}<br>" + ey + ": %{y:.2f}<extra></extra>"))
+    mostrar(estilo(fig, "Cada punto es un cliente", eje(ex), eje(ey), 520))
+    st.warning(f"Este gráfico muestra solo {pct_plano:.1f} % de la información. El "
+               f"{100 - pct_plano:.1f} % restante está en los demás componentes, de modo "
                "que dos clientes cercanos aquí pueden ser distintos en otras dimensiones.")
 
 elif seccion == "5. Segmentación K-Means":
@@ -504,7 +546,7 @@ elif seccion == "5. Segmentación K-Means":
 
     st.subheader("Comparación de valores de K")
     a, b = st.columns(2)
-    for col, medida, titulo, eje in [
+    for col, medida, titulo, nombre_eje in [
         (a, "Inercia", "Método del codo", "Inercia (suma de distancias al centro)"),
         (b, "Silueta", "Coeficiente de silueta", "Silueta promedio (-1 a 1)"),
     ]:
@@ -512,7 +554,7 @@ elif seccion == "5. Segmentación K-Means":
                                    mode="lines+markers", line=dict(color=AZUL, width=2),
                                    marker=dict(size=9)))
         fig.add_vline(x=k, line_dash="dot", line_color=GRIS, annotation_text=f"K = {k}")
-        col.plotly_chart(estilo(fig, titulo, "Número de grupos (K)", eje, 360),
+        col.plotly_chart(estilo(fig, titulo, "Número de grupos (K)", nombre_eje, 360),
                          width="stretch")
     st.dataframe(comparacion.round(3), hide_index=True, width="stretch")
 
@@ -539,18 +581,25 @@ elif seccion == "5. Segmentación K-Means":
     st.caption("Las letras son solo nombres, asignados de mayor a menor tamaño. "
                "No indican orden, calidad ni riesgo.")
 
+    ex, ey, pct_plano = elegir_ejes("km")
     fig = go.Figure()
     for g in orden_grupos:
         m = grupos == g
         fig.add_trace(go.Scattergl(
-            x=puntajes.loc[m, "CP1"], y=puntajes.loc[m, "CP2"], mode="markers", name=g,
-            marker=dict(size=5, color=COLOR_GRUPO[g], opacity=0.45),
-            hovertemplate=g + "<br>CP1: %{x:.2f}<br>CP2: %{y:.2f}<extra></extra>"))
-    mostrar(estilo(fig, "Grupos sobre los dos primeros componentes",
-                   f"CP1 ({varianza['Varianza explicada (%)'][0]:.1f} %)",
-                   f"CP2 ({varianza['Varianza explicada (%)'][1]:.1f} %)", 540))
-    st.caption(f"El plano muestra {var_2d:.1f} % de la información; parte del solapamiento "
-               "que se ve aquí se resuelve en los otros componentes.")
+            x=puntajes.loc[m, ex], y=puntajes.loc[m, ey], mode="markers", name=g,
+            marker=dict(size=5, color=COLOR_GRUPO[g], opacity=0.4),
+            hovertemplate=g + "<br>" + ex + ": %{x:.2f}<br>" + ey + ": %{y:.2f}<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=centros[ex], y=centros[ey], mode="markers+text", name="Centroides",
+        text=[g.replace("Grupo ", "") for g in centros.index], textposition="top center",
+        textfont=dict(size=15, color=TINTA),
+        marker=dict(symbol="x", size=14, color=TINTA, line=dict(width=2, color="#fcfcfb")),
+        hovertemplate="Centroide %{text}<extra></extra>"))
+    mostrar(estilo(fig, "Grupos y centroides en el espacio de componentes",
+                   eje(ex), eje(ey), 560))
+    st.caption(f"El plano muestra {pct_plano:.1f} % de la información; parte del solapamiento "
+               "que se ve aquí se resuelve en los otros componentes. Cada X negra es el "
+               "centroide: el cliente promedio de ese grupo.")
 
     st.subheader("Qué caracteriza a cada grupo")
     perfil = perfil_estandarizado()
@@ -588,7 +637,92 @@ elif seccion == "5. Segmentación K-Means":
                 "clasificar. Por grupo: "
                 + ", ".join(f"{g} {mal[g]:.0f} %" for g in orden_grupos) + ".")
 
-else:  # 6. Conclusiones
+elif seccion == "6. Comparación con la clase":
+    st.title("Comparación con el ejercicio de clase")
+    st.markdown("""
+Esta base es la misma que se trabajó en la Clase 13. Para que el ejercicio no sea
+una repetición, aquí se reproduce el método de clase y se contrasta con las
+decisiones de este proyecto. La pregunta es: **¿cuánto dependen los perfiles de
+clientes de las decisiones de preparación?**
+""")
+    datos_c, plano_c, grupos_c, var_c, sil_c = metodo_clase()
+
+    st.subheader("Decisiones de cada método")
+    st.dataframe(pd.DataFrame({
+        "Decisión": ["Valores faltantes", "Tratamiento de escala", "Componentes",
+                     "Varianza conservada", "Número de grupos", "Silueta"],
+        "Método de clase": ["Reemplazar por cero", "Estandarizar y normalizar cada fila",
+                            "2 (fijados)", f"{var_c:.1f} %", "3", f"{sil_c:.3f}"],
+        "Este proyecto": [faltantes, ("Logaritmo y estandarizar" if usar_log else "Estandarizar"),
+                          f"{n_comp} ({criterio.lower()})", f"{var_retenida:.1f} %",
+                          str(k), f"{sil_k:.3f}"],
+    }), hide_index=True, width="stretch")
+    st.markdown(f"""
+- **Faltantes.** Poner cero en `MINIMUM_PAYMENTS` supone que esos clientes no
+  pagaron nada. Pero el pago mínimo más bajo observado es mayor que cero, así que
+  el cero crea un valor que no existe en el resto de la base. La mediana no
+  inventa un comportamiento extremo.
+- **Escala.** Normalizar cada fila deja a todos los clientes con la misma
+  "longitud": conserva la *forma* del comportamiento (en qué se concentra el
+  cliente) y borra la *intensidad* (cuánto usa la tarjeta). El logaritmo conserva
+  las dos cosas y reduce el peso de los valores extremos.
+- **Componentes.** Con 2 componentes el método de clase conserva {var_c:.1f} % de la
+  variación de sus datos; aquí se conservan {n_comp} con {var_retenida:.1f} %.
+- **Silueta.** Las dos siluetas **no son comparables entre sí**: se calculan en
+  espacios distintos. En 2 dimensiones es más fácil obtener grupos compactos
+  porque se descartó el resto de la información.
+""")
+
+    st.subheader("Los grupos del método de clase")
+    paleta_c = {"Clase 1": "#52514e", "Clase 2": "#898781", "Clase 3": "#c3c2b7"}
+    fig = go.Figure()
+    for g in ["Clase 1", "Clase 2", "Clase 3"]:
+        m = grupos_c == g
+        fig.add_trace(go.Scattergl(x=plano_c.loc[m, "CP1"], y=plano_c.loc[m, "CP2"],
+                                   mode="markers", name=g,
+                                   marker=dict(size=5, color=paleta_c[g], opacity=0.5)))
+    cen = plano_c.groupby(grupos_c).mean()
+    fig.add_trace(go.Scatter(x=cen["CP1"], y=cen["CP2"], mode="markers+text",
+                             name="Centroides", text=[g[-1] for g in cen.index],
+                             textposition="top center", textfont=dict(size=15, color=TINTA),
+                             marker=dict(symbol="x", size=14, color=TINTA)))
+    mostrar(estilo(fig, "Método de clase: 3 grupos sobre 2 componentes",
+                   "CP1 (datos normalizados)", "CP2 (datos normalizados)", 480))
+    medias_c = datos_c.groupby(grupos_c).mean()
+    medias_c.columns = [NOMBRE[c] for c in medias_c.columns]
+    medias_c.insert(0, "Clientes", grupos_c.value_counts().loc[medias_c.index].values)
+    st.markdown("**Promedios en unidades originales**")
+    st.dataframe(medias_c.T.round(2), width="stretch")
+
+    st.subheader("¿Los dos métodos agrupan igual a los clientes?")
+    comunes = grupos.index.intersection(grupos_c.index)
+    cruce = pd.crosstab(grupos.loc[comunes], grupos_c.loc[comunes])
+    cruce_pct = cruce.div(cruce.sum(axis=1), axis=0) * 100
+    fig = px.imshow(cruce_pct.round(0), text_auto=True, aspect="auto",
+                    color_continuous_scale=[[0, "#f0efec"], [1, "#1c5cab"]], zmin=0, zmax=100)
+    mostrar(estilo(fig, "A qué grupo de clase va cada grupo de este proyecto (% de la fila)",
+                   "Grupo según el método de clase", "Grupo según este proyecto", 380))
+    principal = cruce_pct.idxmax(axis=1)
+    st.markdown("Cada fila suma 100 %. Si una fila se concentra en una sola columna, "
+                "ese grupo existe en los dos métodos; si se reparte, es un perfil que "
+                "el método de clase no separa.")
+    for g in cruce_pct.index:
+        st.markdown(f"- **{g}**: {cruce_pct.loc[g, principal[g]]:.0f} % cae en "
+                    f"{principal[g]}.")
+    repetidos = principal.value_counts()
+    fusionados = [c for c, n in repetidos.items() if n > 1]
+    if fusionados:
+        st.info("Varios grupos de este proyecto caen sobre todo en el mismo grupo de clase ("
+                + ", ".join(fusionados) + "): con 3 grupos y 2 componentes esos perfiles "
+                "quedan fusionados.")
+    st.markdown("""
+**Qué se aprende de la comparación.** Las grandes divisiones aparecen con los dos
+métodos, lo que indica que son rasgos de los datos y no un efecto de la
+preparación. Las subdivisiones más finas sí dependen de las decisiones tomadas, y
+por eso deben leerse como una propuesta de segmentación, no como la única posible.
+""")
+
+else:  # 7. Conclusiones
     st.title("Conclusiones")
     perfil = perfil_estandarizado()
     tam = grupos.value_counts().loc[orden_grupos]
