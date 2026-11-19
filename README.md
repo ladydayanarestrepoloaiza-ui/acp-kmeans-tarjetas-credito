@@ -7,7 +7,7 @@ Curso: Machine Learning aplicado a Economía y Finanzas, Pontificia Universidad 
 
 - **Repositorio:** https://github.com/ladydayanarestrepoloaiza-ui/acp-kmeans-tarjetas-credito
 - **Aplicación desplegada:** https://perfiles-tarjetas-credito.streamlit.app/
-- **Video de sustentación:** _pendiente: pegar aquí el enlace del video_
+- **Video de sustentación:** https://youtu.be/gjP-oR0YsUc
 
 ## Contexto
 
