@@ -63,7 +63,8 @@ Todo el procesamiento está en `app.py` y se recalcula cada vez que se abre la a
    - Logaritmo `log(1 + x)` en montos y conteos para reducir la asimetría.
 3. **Estandarización y ACP** (función `ajustar_acp`): `StandardScaler` y `PCA` de scikit-learn. Se presentan varianza por componente, acumulada, sedimentación y cargas.
 4. **K-Means** (funciones `comparar_k` y `ajustar_kmeans`): se aplica sobre los componentes conservados. Se comparan K de 2 a 8 con el método del codo y el coeficiente de silueta. `n_init=10` y `random_state=42`.
-5. **Descripción de los grupos:** promedios de las variables originales por grupo y silueta por grupo.
+5. **Descripción de los grupos:** promedios de las variables originales por grupo, centroides y silueta por grupo.
+6. **Comparación con el ejercicio de clase** (función `metodo_clase`): se reproduce el método de la Clase 13 sobre la misma base y se cruza con los grupos de este proyecto.
 
 Las decisiones (variables, faltantes, logaritmo, criterio de componentes y K) se pueden cambiar en la barra lateral de la aplicación.
 
@@ -88,6 +89,19 @@ Con la configuración por defecto:
 Las letras son solo nombres asignados por tamaño; no indican orden ni calidad.
 
 - **Separación:** las siluetas son bajas (menos de 0,5) y 5,1 % de los clientes queda más cerca de otro grupo que del suyo. El grupo D es el más difuso. Los grupos describen tendencias, no segmentos nítidos.
+
+## Diferencia frente al ejercicio de clase
+
+Esta base se trabajó en la Clase 13 del curso. Este proyecto no repite ese ejercicio: toma decisiones distintas y mide cuánto cambian los resultados.
+
+| Decisión | Clase 13 | Este proyecto |
+|---|---|---|
+| Faltantes | Reemplazar por cero | Imputar con la mediana |
+| Escala | Estandarizar y normalizar cada fila | Logaritmo y estandarizar |
+| Componentes | 2 fijados (47,5 % de la variación) | 6 según varianza acumulada (84,2 %) |
+| Grupos | 3 | 5 |
+
+Al cruzar las dos segmentaciones, las grandes divisiones coinciden (quienes compran, quienes casi no usan la tarjeta y quienes piden avances), pero el método de clase fusiona perfiles que aquí se separan: compradores de contado y a cuotas quedan en un mismo grupo. Las siluetas de ambos métodos no son comparables entre sí porque se calculan en espacios distintos.
 
 ## Limitaciones
 
